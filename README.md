@@ -14,7 +14,7 @@
 
 我们使用最极简的配置方法，进入我们的项目，只需要一份deepseek的api_key填写进来就能完成所有配置。
 
-![image-20261019204122083](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019204122083.png)
+![image-20261019204122083](docs/images/image-20261019204122083.png)
 
 【模型的默认选择ds-flash，推理强度为高，且为防止token被单一任务无限次调用，外层设计了熔断机制】
 
@@ -56,7 +56,7 @@ prompt = config["system_prompt"] + "\n\n" + skill + (
 prompt:我要做一个飞机大战的游戏，要能闯关，闯关完后要有积分，积分能购买战机。
 ```
 
-![image-20261019213703468](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019213703468.png)
+![image-20261019213703468](docs/images/image-20261019213703468.png)
 
 
 
@@ -70,7 +70,7 @@ prompt:我要做一个飞机大战的游戏，要能闯关，闯关完后要有�
 
 只要是已经有现成的作品了，我们是强制会携带上打开作品按钮的
 
-![image-20261019214422009](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019214422009.png)
+![image-20261019214422009](docs/images/image-20261019214422009.png)
 
 即便是底层实现是用python、JAVA等实现，我们都会尽量封装成web可视化端口来进行展示。
 
@@ -82,7 +82,7 @@ prompt:我要做一个飞机大战的游戏，要能闯关，闯关完后要有�
 
 因此，新建作品时，创想伙伴会先询问孩子想做什么，再推荐“帮我准备好”。程序会自动命名并创建专属文件夹，然后把孩子刚才说的想法带入聊天框。孩子不需要寻找目录，也不需要把需求再说一遍。
 
-![image-20261019215821772](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019215821772.png)
+![image-20261019215821772](docs/images/image-20261019215821772.png)
 
 ### 使用成熟的第三方库：
 
@@ -102,7 +102,7 @@ prompt:我要做一个飞机大战的游戏，要能闯关，闯关完后要有�
 
 因此，创想伙伴没有把“孩子不懂技术”保存成用户的长期记忆，而是直接将它作为产品默认遵守的交流规则，写在skill和系统提示词中：
 
-![image-20261019210834817](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019210834817.png)
+![image-20261019210834817](docs/images/image-20261019210834817.png)
 
 ### 想法丰富，但描述往往很短
 
@@ -128,5 +128,5 @@ prompt:我要做一个飞机大战的游戏，要能闯关，闯关完后要有�
 
 孩子不需要先学会准确地描述一切，也可以从一句简单的想法开始创作。
 
-![image-20261019212328581](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\image-20261019212328581.png)
+![image-20261019212328581](docs/images/image-20261019212328581.png)
 
