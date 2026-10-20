@@ -40,24 +40,45 @@ def creative_fingerprint(seed: str, recent_signatures: set[str] | None = None) -
     return result
 
 
-def friendly_project_name(idea: str) -> str:
-    """Make a short folder/title without asking a child to name files."""
-    value = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "", idea).strip()
+WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def sanitize_project_name(name: str, fallback: str = "我的新作品") -> str:
+    """Turn an Agent-suggested title into a safe, short folder name."""
+    value = (name or "").strip().splitlines()[0] if (name or "").strip() else ""
+    value = re.sub(r"^(?:作品名|名称|文件夹名)\s*[：:]\s*", "", value)
+    value = value.strip("`'\"“”‘’《》【】[]()（） ")
+    value = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "", value)
     value = re.sub(r"\s+", "", value)
-    for prefix in ("我想要做一个", "我想做一个", "我要做一个", "我想要做", "我想做", "我要做", "帮我做一个", "做一个"):
-        if value.startswith(prefix):
-            value = value[len(prefix):]
-            break
-    value = re.split(r"[，。！!？?；;]", value)[0][:18]
+    value = re.sub(r"[^\w\u4e00-\u9fff-]", "", value, flags=re.UNICODE).strip(". ")[:24]
+    if not value or value.upper() in WINDOWS_RESERVED:
+        value = fallback
     return value or "我的新作品"
 
 
-def unique_project_path(root: Path, idea: str) -> Path:
+def friendly_project_name(idea: str) -> str:
+    """Create a readable fallback title when the model cannot suggest one."""
+    value = re.sub(r"\s+", "", idea or "")
+    for prefix in ("我想要做一个", "我想做一个", "我要做一个", "我想要做", "我想做", "我要做", "帮我做一个", "帮我做", "做一个", "制作一个"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    # Stop before implementation details or the child's feature wish-list. The
+    # conversational Agent normally supplies a better semantic title; this is
+    # only the deterministic offline fallback.
+    value = re.split(r"(?:[，。！!？?；;]|要能|能够|可以|需要|然后|并且|而且|就是)", value, maxsplit=1)[0]
+    return sanitize_project_name(value[:18])
+
+
+def create_unique_project_path(root: Path, name: str) -> Path:
+    """Atomically create a named project folder, adding -2, -3... on collision."""
     root.mkdir(parents=True, exist_ok=True)
-    base = friendly_project_name(idea)
-    target = root / base
-    number = 2
-    while target.exists():
-        target = root / f"{base}-{number}"
-        number += 1
-    return target
+    base = sanitize_project_name(name)
+    number = 1
+    while True:
+        target = root / (base if number == 1 else f"{base}-{number}")
+        try:
+            target.mkdir(exist_ok=False)
+            return target
+        except FileExistsError:
+            number += 1

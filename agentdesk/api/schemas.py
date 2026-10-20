@@ -32,10 +32,21 @@ class ModelConfig(BaseModel):
         return value.rstrip("/")
 
 class NewSession(BaseModel):
+    kind: Literal["chat", "project"] = "project"
     idea: str = Field(default="", max_length=4000)
+    name: str | None = Field(default=None, max_length=100)
     placement: Literal["auto", "manual"] = "auto"
     workspace: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=100)
+
+class NewProject(BaseModel):
+    idea: str = Field(min_length=1, max_length=4000)
+    name: str | None = Field(default=None, max_length=100)
+    placement: Literal["auto", "manual"] = "auto"
+    workspace: str | None = None
+
+class ProjectNameInput(BaseModel):
+    idea: str = Field(min_length=1, max_length=4000)
 
 class EditSession(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)

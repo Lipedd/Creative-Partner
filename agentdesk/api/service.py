@@ -1,11 +1,14 @@
 import os
+import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from fastapi import HTTPException
-from agentdesk.config import DEFAULT_CONFIG, PROVIDERS
-from agentdesk.creative import creative_fingerprint, friendly_project_name, unique_project_path
-from agentdesk.runtime import Runner
+from langchain_core.messages import HumanMessage, SystemMessage
+from agentdesk.config import DEFAULT_CONFIG, PROVIDERS, create_model
+from agentdesk.creative import create_unique_project_path, creative_fingerprint, friendly_project_name, sanitize_project_name
+from agentdesk.runtime import Runner, content_text
 from agentdesk.project_runtime import launch_web_app, port_open
 from agentdesk.secrets import protect_secret, unprotect_secret
 from agentdesk.storage import Store
@@ -16,6 +19,8 @@ class DeskService:
         data.mkdir(parents=True, exist_ok=True)
         self.workspace = data / "workspace"
         self.workspace.mkdir(exist_ok=True)
+        self.chats_root = data / "chats"
+        self.chats_root.mkdir(exist_ok=True)
         configured = os.environ.get("AGENTDESK_PROJECTS_DIR", "").strip()
         if configured:
             self.projects_root = Path(configured).expanduser()
@@ -65,29 +70,85 @@ class DeskService:
         except KeyError:
             raise HTTPException(404, "会话不存在")
 
-    def create_project(self, idea, placement="auto", workspace=None, title=None):
+    def create_project(self, idea, placement="auto", workspace=None, title=None, name=None):
         idea = idea.strip()
         if not idea:
             raise HTTPException(400, "先告诉我你想做什么吧")
-        name = friendly_project_name(idea)
-        if placement == "manual":
-            path = Path(workspace or "").expanduser()
-            if not path.is_absolute() or not path.is_dir():
-                raise HTTPException(400, "请选择一个已经存在的文件夹")
-            path = path.resolve()
-            try:
-                test = path / ".agentdesk-write-check"
-                test.write_text("ok", encoding="utf-8")
-                test.unlink()
-            except OSError:
-                raise HTTPException(400, "这个位置不能保存作品，请换一个文件夹")
-        else:
-            path = unique_project_path(self.projects_root, idea)
-            path.mkdir(parents=True)
+        name = sanitize_project_name(name or "", friendly_project_name(idea))
+        path = self._project_path(name, placement, workspace)
         sid = self.store.new_session(path, self.config(), title or name)
         fingerprint = creative_fingerprint(sid, self.store.recent_project_signatures())
         self.store.add_project(sid, name, idea, fingerprint)
         return self.session(sid)
+
+    def create_chat(self, title=None):
+        sid = uuid.uuid4().hex
+        path = self.chats_root / sid
+        path.mkdir(parents=True)
+        self.store.new_session(path, self.config(), title or "新的对话", sid=sid)
+        return self.session(sid)
+
+    def attach_project(self, sid, idea, placement="auto", workspace=None, name=None):
+        session = self.idle(sid)
+        if session.get("project"):
+            raise HTTPException(409, "这个对话已经有作品了")
+        idea = idea.strip()
+        if not idea:
+            raise HTTPException(400, "先告诉我你想做什么吧")
+        name = sanitize_project_name(name or session.get("project_proposal_name") or "", friendly_project_name(idea))
+        path = self._project_path(name, placement, workspace)
+        old_workspace = Path(session["workspace"]).resolve()
+        uploads = old_workspace / "uploads"
+        if uploads.is_dir() and path.resolve() != old_workspace:
+            shutil.copytree(uploads, path / "uploads", dirs_exist_ok=True)
+        fingerprint = creative_fingerprint(sid, self.store.recent_project_signatures())
+        self.store.attach_project(sid, path, name, idea, fingerprint, old_workspace)
+        return self.session(sid)
+
+    def dismiss_project_proposal(self, sid):
+        session = self.idle(sid)
+        if session.get("project"):
+            raise HTTPException(409, "作品已经开始制作了")
+        self.store.update_session(sid, project_proposal=None, project_proposal_name=None)
+        return self.session(sid)
+
+    def suggest_project_name(self, idea, client):
+        idea = idea.strip()
+        fallback = friendly_project_name(idea)
+        if not idea:
+            return fallback
+        config = self.config()
+        key = self.api_key(client, config["provider"])
+        if not key and PROVIDERS[config["provider"]][0] != "ollama":
+            return fallback
+        try:
+            naming_config = dict(config)
+            naming_config["max_tokens"] = min(256, int(config.get("max_tokens", 4096)))
+            response = create_model(naming_config, key).invoke([
+                SystemMessage(content=(
+                    "你只负责给儿童作品取一个简短中文名称。提炼核心对象、作品类型或最有辨识度的功能；"
+                    "名称控制在4到12个汉字左右，不要出现‘我要做’‘帮我做’等请求语，不要标点、引号、解释或换行，只输出名称。"
+                )),
+                HumanMessage(content=idea),
+            ])
+            return sanitize_project_name(content_text(response.content), fallback)
+        except Exception:
+            return fallback
+
+    def _project_path(self, name, placement, workspace):
+        if placement == "manual":
+            parent = Path(workspace or "").expanduser()
+            if not parent.is_absolute() or not parent.is_dir():
+                raise HTTPException(400, "请选择一个已经存在的文件夹")
+            parent = parent.resolve()
+            try:
+                return create_unique_project_path(parent, name)
+            except OSError:
+                raise HTTPException(400, "这个位置不能保存作品，请换一个文件夹")
+        try:
+            return create_unique_project_path(self.projects_root, name)
+        except OSError:
+            raise HTTPException(400, "默认位置不能保存作品，请选择其他位置")
 
     def idle(self, sid):
         session = self.session(sid)
@@ -147,7 +208,10 @@ class DeskService:
     def snapshot(self, sid):
         session = self.session(sid)
         run = self.runner.get(sid)
-        state = run.snapshot() if run else {"status": "approval" if session["pending"] else "idle", "text": "", "error": ""}
+        state = run.snapshot() if run else {
+            "status": "approval" if session["pending"] else "idle", "text": "", "error": "",
+            "mode": "project" if session.get("project") else "chat",
+        }
         state.pop("events", None)
         return {"session": session, "run": state, "messages": self.store.messages(sid), "events": self.store.events(sid)}
 

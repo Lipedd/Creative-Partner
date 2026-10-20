@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from agentdesk.config import PROVIDERS, create_model, list_models
 from agentdesk.runtime import content_text
 from agentdesk.workspace import MAX_FILE, extract_text, image_data, list_directory, resolve_inside, save_upload
-from .schemas import Credentials, EditSession, MemoryInput, MessageInput, ModelConfig, NewSession, ResumeInput
+from .schemas import Credentials, EditSession, MemoryInput, MessageInput, ModelConfig, NewProject, NewSession, ProjectNameInput, ResumeInput
 
 router = APIRouter(prefix="/api")
 
@@ -56,10 +56,26 @@ def sessions(archived: bool = False, service=Depends(desk)):
 
 @router.post("/sessions", status_code=201)
 def new_session(body: NewSession, service=Depends(desk)):
+    if body.kind == "chat":
+        return service.create_chat(body.title)
     # Keep old local clients working; the Vue flow always supplies the child's idea.
     if not body.idea.strip() and body.workspace:
-        return service.create_project("我的新作品", "manual", body.workspace, body.title)
-    return service.create_project(body.idea, body.placement, body.workspace, body.title)
+        return service.create_project("我的新作品", "manual", body.workspace, body.title, body.name)
+    return service.create_project(body.idea, body.placement, body.workspace, body.title, body.name)
+
+@router.post("/project-name")
+def project_name(body: ProjectNameInput, request: Request, service=Depends(desk)):
+    return {"name": service.suggest_project_name(body.idea, request.state.client)}
+
+@router.post("/sessions/{sid}/project", status_code=201)
+def start_project(sid: str, body: NewProject, service=Depends(desk)):
+    with service.lock:
+        return service.attach_project(sid, body.idea, body.placement, body.workspace, body.name)
+
+@router.delete("/sessions/{sid}/project-proposal")
+def dismiss_project_proposal(sid: str, service=Depends(desk)):
+    with service.lock:
+        return service.dismiss_project_proposal(sid)
 
 @router.get("/sessions/{sid}")
 def snapshot(sid: str, service=Depends(desk)):
