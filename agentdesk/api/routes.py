@@ -45,6 +45,8 @@ def credentials(body: Credentials, request: Request, service=Depends(desk)):
 
 @router.post("/models/list")
 def models(body: ModelConfig, request: Request, service=Depends(desk)):
+    if service.demo:
+        raise HTTPException(403, "体验版使用已经准备好的模型")
     key = service.require_key(request.state.client, body.provider)
     try:
         return {"models": list_models(body.model_dump(), key)}
@@ -53,6 +55,8 @@ def models(body: ModelConfig, request: Request, service=Depends(desk)):
 
 @router.post("/models/test")
 def model_test(body: ModelConfig, request: Request, service=Depends(desk)):
+    if service.demo:
+        raise HTTPException(403, "体验版使用已经准备好的模型")
     key = service.require_key(request.state.client, body.provider)
     try:
         result = create_model(body.model_dump(), key).invoke("Reply with OK only.")

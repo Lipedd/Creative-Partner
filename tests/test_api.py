@@ -214,6 +214,8 @@ def test_demo_mode_is_isolated_limited_and_uses_server_key(tmp_path, monkeypatch
         assert boot['credentials']['DeepSeek'] is True
         assert 'terminal' not in boot['config']['tools']
         assert first.put('/api/credentials', json={'provider':'DeepSeek','api_key':'visitor-key'}).status_code == 403
+        assert first.post('/api/models/test', json=boot['config']).status_code == 403
+        assert first.post('/api/models/list', json=boot['config']).status_code == 403
         assert first.get('/api/directories').status_code == 403
 
         chat = first.post('/api/sessions', json={'kind':'chat'}).json()
