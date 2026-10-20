@@ -11,6 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from PIL import Image
 
 from agentdesk.config import DEFAULT_CONFIG
+from agentdesk.creative import create_unique_project_path, friendly_project_name, sanitize_project_name
 from agentdesk.runtime import Runner
 from agentdesk.storage import Store
 from agentdesk.tools import build_tools, calculate
@@ -38,6 +39,8 @@ class ScriptedModel(BaseChatModel):
             msg = AIMessage(content="", tool_calls=[{"name": "write_file", "args": {"path": "index.html", "content": "<h1>可以玩了</h1>"}, "id": "call_index", "type": "tool_call"}])
         elif self.mode == "terminal":
             msg = AIMessage(content="准备完成。", tool_calls=[{"name": "run_terminal", "args": {"command": "Set-Content -Encoding UTF8 -Path result.txt -Value 'hello workspace'"}, "id": "call_terminal", "type": "tool_call"}])
+        elif self.mode == "propose":
+            msg = AIMessage(content="", tool_calls=[{"name": "propose_project", "args": {"idea": "做一个飞机大战游戏", "name": "星际飞机大战"}, "id": "call_propose", "type": "tool_call"}])
         elif self.mode == "slow":
             time.sleep(0.4)
             msg = AIMessage(content="晚到的回答", tool_calls=[{"name": "save_memory", "args": {"content": "should not save"}, "id": "call_save", "type": "tool_call"}])
@@ -61,6 +64,7 @@ def desk(tmp_path):
     root.mkdir()
     store = Store(tmp_path / "desk.sqlite")
     sid = store.new_session(root, DEFAULT_CONFIG)
+    store.add_project(sid, "测试作品", "做一个测试作品", {"signature": "fixture"})
     return root, store, sid, Runner(store, tmp_path / "graph.sqlite")
 
 def test_terminal_requires_approval_and_resumes_after_restart(desk, tmp_path):
@@ -116,6 +120,18 @@ def test_checkpoint_history_and_session_isolation(desk, tmp_path):
     wait(restarted.start(other, "", text="one", model_override=model))
     assert store.messages(other)[-1]["content"] == "历史用户消息数：1"
 
+def test_chat_mode_cannot_write_project_files(tmp_path):
+    root = tmp_path / "chat"
+    root.mkdir()
+    store = Store(tmp_path / "desk.sqlite")
+    sid = store.new_session(root, DEFAULT_CONFIG)
+    runner = Runner(store, tmp_path / "graph.sqlite")
+    state = wait(runner.start(sid, "", text="你好", model_override=ScriptedModel(mode="write")))
+    assert state["mode"] == "chat"
+    assert not (root / "result.txt").exists()
+    assert store.project(sid) is None
+    assert store.messages(sid)[-1]["project_link"] is False
+
 def test_cancel_prevents_tools_and_allows_next_turn(desk):
     root, store, sid, runner = desk
     run = runner.start(sid, "", text="slow", model_override=ScriptedModel(mode="slow"))
@@ -167,6 +183,15 @@ def test_calculator_does_not_execute_code():
     for expression in ["__import__('os').getcwd()", "2 ** 999999", "[1,2]", "9**9**9"]:
         with pytest.raises(ValueError):
             calculate(expression)
+
+def test_project_names_are_readable_safe_and_never_overwrite(tmp_path):
+    assert friendly_project_name("我要做一个双人坦克游戏，要能放技能！") == "双人坦克游戏"
+    assert sanitize_project_name("作品名：双人技能坦克！", "备用名字") == "双人技能坦克"
+    assert sanitize_project_name("CON", "备用名字") == "备用名字"
+    first = create_unique_project_path(tmp_path, "双人技能坦克")
+    second = create_unique_project_path(tmp_path, "双人技能坦克")
+    assert first.name == "双人技能坦克"
+    assert second.name == "双人技能坦克-2"
 
 def test_old_consecutive_assistant_notes_become_progress(tmp_path):
     path = tmp_path / "legacy.sqlite"

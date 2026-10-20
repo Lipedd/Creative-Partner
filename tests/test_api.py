@@ -27,8 +27,9 @@ def test_deepseek_product_defaults_enable_high_thinking():
 def api(tmp_path):
     app = create_app(tmp_path, OfflineRunner)
     with TestClient(app) as client:
-        boot = client.get('/api/bootstrap').json()
-        sid = client.post('/api/sessions', json={'workspace':boot['workspace']}).json()['id']
+        session = client.post('/api/sessions', json={'kind':'project','idea':'测试作品','name':'测试作品'}).json()
+        sid = session['id']
+        app.state.desk.workspace = Path(session['workspace'])
         client.put('/api/credentials', json={'provider':'DeepSeek','api_key':'local-test-key'})
         yield client, sid, app.state.desk
 
@@ -142,3 +143,61 @@ def test_child_project_creation_and_stable_preview(tmp_path):
         second = client.post('/api/sessions', json={'idea':'我要做一个双人坦克游戏，要能放技能！','placement':'auto'}).json()
         assert second['workspace'] != session['workspace']
         assert second['project']['fingerprint']['signature'] != session['project']['fingerprint']['signature']
+
+def test_project_name_fallback_and_manual_location_create_safe_subfolders(tmp_path):
+    app = create_app(tmp_path, OfflineRunner)
+    chosen = tmp_path/'孩子选择的位置'
+    chosen.mkdir()
+    keep = chosen/'原来的文件.txt'
+    keep.write_text('不要改动', encoding='utf-8')
+    with TestClient(app) as client:
+        suggested = client.post('/api/project-name', json={'idea':'我要做一个双人坦克游戏，要能放技能！'}).json()
+        assert suggested['name'] == '双人坦克游戏'
+        payload = {'kind':'project','idea':'我要做一个双人坦克游戏，要能放技能！','name':'双人技能坦克','placement':'manual','workspace':str(chosen)}
+        first = client.post('/api/sessions', json=payload).json()
+        second = client.post('/api/sessions', json=payload).json()
+        assert Path(first['workspace']) == chosen/'双人技能坦克'
+        assert Path(second['workspace']) == chosen/'双人技能坦克-2'
+        assert keep.read_text(encoding='utf-8') == '不要改动'
+
+def test_chat_waits_for_confirmation_before_creating_project(tmp_path):
+    app = create_app(tmp_path, OfflineRunner)
+    with TestClient(app) as client:
+        client.put('/api/credentials', json={'provider':'DeepSeek','api_key':'local-test-key'})
+        chat = client.post('/api/sessions', json={'kind':'chat'}).json()
+        sid = chat['id']
+        assert chat['project'] is None
+        assert Path(chat['workspace']).parent == tmp_path/'chats'
+        assert not any((tmp_path/'projects').iterdir())
+
+        app.state.desk.runner.mode = 'history'
+        assert client.post(f'/api/sessions/{sid}/messages', json={'text':'你好'}).status_code == 202
+        wait(app.state.desk.runner.get(sid))
+        before = client.get(f'/api/sessions/{sid}').json()
+        assert before['session']['project'] is None
+        assert before['run']['mode'] == 'chat'
+        assert before['messages'][-1]['project_link'] is False
+
+        app.state.desk.runner.mode = 'propose'
+        assert client.post(f'/api/sessions/{sid}/messages', json={'text':'我想做一个飞机大战'}).status_code == 202
+        wait(app.state.desk.runner.get(sid))
+        proposed = client.get(f'/api/sessions/{sid}').json()['session']
+        assert proposed['project'] is None
+        assert proposed['project_proposal'] == '做一个飞机大战游戏'
+        assert proposed['project_proposal_name'] == '星际飞机大战'
+
+        started = client.post(f'/api/sessions/{sid}/project', json={'idea':proposed['project_proposal'],'placement':'auto'})
+        assert started.status_code == 201
+        assert started.json()['project']['preview_ready'] is False
+        assert started.json()['project']['name'] == '星际飞机大战'
+        assert Path(started.json()['workspace']).name == '星际飞机大战'
+        assert Path(started.json()['workspace']).parent == tmp_path/'projects'
+
+        app.state.desk.runner.mode = 'index'
+        assert client.post(f'/api/sessions/{sid}/messages', json={'text':'开始制作吧'}).status_code == 202
+        wait(app.state.desk.runner.get(sid))
+        after = client.get(f'/api/sessions/{sid}').json()
+        assistant_messages = [m for m in after['messages'] if m['role'] == 'assistant']
+        assert after['session']['project']['preview_ready'] is True
+        assert assistant_messages[0]['project_link'] is False
+        assert assistant_messages[-1]['project_link'] is True
