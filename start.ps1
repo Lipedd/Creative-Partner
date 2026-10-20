@@ -2,6 +2,7 @@ param([switch]$NoBrowser)
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+$env:AGENTDESK_MODE = 'local'
 
 $appUrl = 'http://127.0.0.1:8501'
 $healthUrl = "$appUrl/api/health"

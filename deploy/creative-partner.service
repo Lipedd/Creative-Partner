@@ -1,0 +1,26 @@
+[Unit]
+Description=Creative Partner public demo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=creative-partner
+Group=creative-partner
+WorkingDirectory=/opt/creative-partner
+EnvironmentFile=/etc/creative-partner.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/creative-partner/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 18601
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/creative-partner
+TasksMax=160
+MemoryMax=1200M
+
+[Install]
+WantedBy=multi-user.target
