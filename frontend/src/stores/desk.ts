@@ -9,6 +9,7 @@ export const useDesk = defineStore('desk', () => {
   const defaultConfig = ref<ModelConfig | null>(null)
   const credentials = ref<Record<string, boolean>>({})
   const workspace = ref('')
+  const defaultWorkspace = ref('')
   const state = ref<Snapshot | null>(null)
   const loading = ref(true)
   const connected = ref(false)
@@ -19,6 +20,8 @@ export const useDesk = defineStore('desk', () => {
   const inspectorOpen = ref(window.innerWidth >= 1000)
   const archived = ref(false)
   const refreshFiles = ref(0)
+  const projectDraft = ref('')
+  const projectNameDraft = ref('')
   let source: EventSource | null = null
   let selection = 0
   const session = computed(() => state.value?.session)
@@ -35,7 +38,7 @@ export const useDesk = defineStore('desk', () => {
     try {
       const result = await api<Bootstrap>('/bootstrap')
       sessions.value = result.sessions; providers.value = result.providers; defaultConfig.value = result.config
-      credentials.value = result.credentials; workspace.value = result.workspace
+      credentials.value = result.credentials; workspace.value = result.workspace; defaultWorkspace.value = result.workspace
     } finally { loading.value = false }
   }
   async function refreshSessions() { sessions.value = await api<Session[]>(`/sessions?archived=${archived.value}`) }
@@ -63,11 +66,34 @@ export const useDesk = defineStore('desk', () => {
     source.onerror = () => { if (version === selection) connected.value = false }
     sidebarOpen.value = false
   }
-  async function createProject(idea: string, placement: 'auto'|'manual' = 'auto', workspacePath?: string) {
-    const value = await api<Session>('/sessions', { method: 'POST', body: body({ idea, placement, workspace: workspacePath }) })
+  async function createProject(idea: string, name: string, placement: 'auto'|'manual' = 'auto', workspacePath?: string) {
+    const value = await api<Session>('/sessions', { method: 'POST', body: body({ kind: 'project', idea, name, placement, workspace: workspacePath }) })
     workspace.value = value.workspace; archived.value = false
     await refreshSessions()
     return value.id
+  }
+  async function createChat() {
+    const value = await api<Session>('/sessions', { method: 'POST', body: body({ kind: 'chat' }) })
+    workspace.value = value.workspace; archived.value = false
+    await refreshSessions()
+    return value.id
+  }
+  async function attachProject(idea: string, name: string, placement: 'auto'|'manual' = 'auto', workspacePath?: string) {
+    if (!session.value) throw new Error('请先打开一个对话')
+    const id = session.value.id
+    await api<Session>(sessionUrl(id, 'project'), { method: 'POST', body: body({ idea, name, placement, workspace: workspacePath }) })
+    projectDraft.value = ''
+    projectNameDraft.value = ''
+    await refreshSessions()
+    await select(id)
+    return id
+  }
+  async function dismissProjectProposal() {
+    if (!session.value) return
+    const id = session.value.id
+    await api<Session>(sessionUrl(id, 'project-proposal'), { method: 'DELETE' })
+    const snapshot = await api<Snapshot>(`/sessions/${id}`)
+    if (session.value?.id === id) applySnapshot(snapshot)
   }
   async function send(text: string, attachments: Attachment[]) {
     if (!session.value || sending.value) return false
@@ -91,7 +117,8 @@ export const useDesk = defineStore('desk', () => {
     credentials.value = await api<Record<string, boolean>>('/credentials', { method: 'PUT', body: body({ provider, api_key: apiKey, persistent }) })
   }
   function dispose() { selection++; source?.close(); source = null }
-  return { sessions, providers, credentials, workspace, state, loading, connected, sending, error, dialog,
-    sidebarOpen, inspectorOpen, archived, refreshFiles, defaultConfig, session, running, locked, ready,
-    guard, initialize, refreshSessions, select, createProject, send, saveConfig, setKey, dispose }
+  return { sessions, providers, credentials, workspace, defaultWorkspace, state, loading, connected, sending, error, dialog,
+    sidebarOpen, inspectorOpen, archived, refreshFiles, projectDraft, projectNameDraft, defaultConfig, session, running, locked, ready,
+    guard, initialize, refreshSessions, select, createProject, createChat, attachProject, dismissProjectProposal,
+    send, saveConfig, setKey, dispose }
 })
