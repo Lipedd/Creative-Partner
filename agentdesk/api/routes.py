@@ -2,7 +2,10 @@ import asyncio
 import json
 import os
 import string
+import io
+import zipfile
 from pathlib import Path
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -14,7 +17,13 @@ from .schemas import Credentials, EditSession, MemoryInput, MessageInput, ModelC
 router = APIRouter(prefix="/api")
 
 def desk(request: Request):
-    return request.app.state.desk
+    return request.state.desk
+
+def demo_status(request: Request):
+    context = request.state.demo_context
+    if not context:
+        return {"enabled": False, "limit": 0, "remaining": 0, "expires_at": 0}
+    return request.app.state.demo_manager.status(context.visitor_id, context.ip_id)
 
 @router.get("/health")
 def health():
@@ -24,7 +33,8 @@ def health():
 def bootstrap(request: Request, service=Depends(desk)):
     return {"providers": [{"name": name, "kind": v[0], "base_url": v[1], "model": v[2]} for name, v in PROVIDERS.items()],
             "config": service.config(), "workspace": service.default_workspace(),
-            "credentials": service.credential_status(request.state.client), "sessions": service.sessions()}
+            "credentials": service.credential_status(request.state.client), "sessions": service.sessions(),
+            "demo": demo_status(request)}
 
 @router.put("/credentials")
 def credentials(body: Credentials, request: Request, service=Depends(desk)):
@@ -90,16 +100,18 @@ def edit_session(sid: str, body: EditSession, service=Depends(desk)):
         values = body.model_dump(exclude_none=True)
         if values:
             service.store.update_session(sid, **values)
-    return service.session(sid)
+    return service.public_session(service.session(sid))
 
 @router.put("/sessions/{sid}/config")
 def update_config(sid: str, body: ModelConfig, service=Depends(desk)):
+    if service.demo:
+        raise HTTPException(403, "体验版使用已经准备好的设置")
     with service.lock:
         service.idle(sid)
         config = body.model_dump()
         service.store.update_session(sid, config=config)
         service.store.set_setting("config", config)
-    return service.session(sid)
+    return service.public_session(service.session(sid))
 
 @router.post("/sessions/{sid}/messages", status_code=202)
 def send(sid: str, body: MessageInput, request: Request, service=Depends(desk)):
@@ -117,8 +129,13 @@ def send(sid: str, body: MessageInput, request: Request, service=Depends(desk)):
             if not actual.is_file():
                 raise HTTPException(400, "附件已移动或不存在")
             attachments.append(uploads[path])
+        if service.demo:
+            context = request.state.demo_context
+            usage = request.app.state.demo_manager.consume(context.visitor_id, context.ip_id)
+        else:
+            usage = demo_status(request)
         service.runner.start(sid, key, text=body.text, attachments=attachments)
-    return {"status": "started"}
+    return {"status": "started", "demo": usage}
 
 @router.post("/sessions/{sid}/stop")
 def stop(sid: str, service=Depends(desk)):
@@ -169,6 +186,8 @@ def export(sid: str, format: str = "json", service=Depends(desk)):
 
 @router.get("/directories")
 def directories(path: str = "", service=Depends(desk)):
+    if service.demo:
+        raise HTTPException(403, "体验版会自动准备临时工作区")
     p = Path(path or service.default_workspace()).expanduser()
     if not p.is_absolute() or not p.is_dir():
         raise HTTPException(400, "文件夹不存在")
@@ -192,14 +211,20 @@ async def upload(sid: str, files: list[UploadFile] = File(...), service=Depends(
     if len(files) > 8:
         raise HTTPException(400, "每次最多上传 8 个附件")
     payloads = []
+    file_limit = 5 * 1024 * 1024 if service.demo else MAX_FILE
     for file in files:
-        raw = await file.read(MAX_FILE + 1)
+        raw = await file.read(file_limit + 1)
         await file.close()
-        if len(raw) > MAX_FILE:
-            raise HTTPException(413, "单个文件不能超过 20 MB")
+        if len(raw) > file_limit:
+            raise HTTPException(413, "体验版单个文件不能超过 5 MB" if service.demo else "单个文件不能超过 20 MB")
         payloads.append((file.filename or "file", raw))
     def persist():
         with service.lock:
+            if service.demo:
+                root = Path(session["workspace"])
+                used = sum(item.stat().st_size for item in root.rglob("*") if item.is_file() and not item.is_symlink())
+                if used + sum(len(raw) for _, raw in payloads) > 30 * 1024 * 1024:
+                    raise HTTPException(413, "这个临时作品最多保存 30 MB 内容")
             known = service.store.setting("uploads_" + sid, {})
             result = [save_upload(session["workspace"], name, raw) for name, raw in payloads]
             known.update({item["path"]: item for item in result})
@@ -230,10 +255,11 @@ def project_preview(sid: str, asset_path: str = "", service=Depends(desk)):
     candidate = entry if not asset_path else resolve_inside(base, asset_path)
     if not candidate.is_file():
         raise HTTPException(404, "作品里的这个内容不存在")
+    connect_policy = "'none'" if service.demo else "'self' https: wss:"
     return FileResponse(candidate, headers={
         "Cache-Control": "no-cache",
         "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": "default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https: wss:; img-src 'self' https: data: blob:; media-src 'self' https: data: blob:; worker-src 'self' blob:; frame-ancestors 'self'",
+        "Content-Security-Policy": f"default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:; style-src 'self' 'unsafe-inline' https:; connect-src {connect_policy}; img-src 'self' https: data: blob:; media-src 'self' https: data: blob:; worker-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
     })
 
 @router.get("/sessions/{sid}/download")
@@ -242,6 +268,22 @@ def download(sid: str, path: str, service=Depends(desk)):
     if not p.is_file():
         raise HTTPException(404, "文件不存在")
     return FileResponse(p, media_type="application/octet-stream", filename=p.name, headers={"X-Content-Type-Options": "nosniff"})
+
+@router.get("/sessions/{sid}/project-download")
+def project_download(sid: str, service=Depends(desk)):
+    session = service.session(sid)
+    if not session.get("project"):
+        raise HTTPException(404, "这个对话还没有作品")
+    root = Path(session["workspace"]).resolve()
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in root.rglob("*"):
+            if item.is_file() and not item.is_symlink() and not any(part.startswith(".") for part in item.relative_to(root).parts):
+                archive.write(item, item.relative_to(root).as_posix())
+    output.seek(0)
+    filename = (session["project"]["name"] or "我的作品") + ".zip"
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}", "X-Content-Type-Options": "nosniff"}
+    return StreamingResponse(output, media_type="application/zip", headers=headers)
 
 @router.get("/sessions/{sid}/memories")
 def memories(sid: str, service=Depends(desk)):

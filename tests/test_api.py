@@ -1,5 +1,7 @@
 import json
 import time
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -201,3 +203,54 @@ def test_chat_waits_for_confirmation_before_creating_project(tmp_path):
         assert after['session']['project']['preview_ready'] is True
         assert assistant_messages[0]['project_link'] is False
         assert assistant_messages[-1]['project_link'] is True
+
+def test_demo_mode_is_isolated_limited_and_uses_server_key(tmp_path, monkeypatch):
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'server-only-test-key')
+    app = create_app(tmp_path, OfflineRunner, mode='demo')
+    with TestClient(app) as first:
+        boot = first.get('/api/bootstrap').json()
+        assert boot['demo']['enabled'] is True
+        assert boot['demo']['remaining'] == 10
+        assert boot['credentials']['DeepSeek'] is True
+        assert 'terminal' not in boot['config']['tools']
+        assert first.put('/api/credentials', json={'provider':'DeepSeek','api_key':'visitor-key'}).status_code == 403
+        assert first.get('/api/directories').status_code == 403
+
+        chat = first.post('/api/sessions', json={'kind':'chat'}).json()
+        sid = chat['id']
+        assert chat['workspace'] == '临时工作区'
+        service = next(iter(app.state.demo_manager.services.values()))
+        for remaining in range(9, -1, -1):
+            response = first.post(f'/api/sessions/{sid}/messages', json={'text':'你好'})
+            assert response.status_code == 202
+            assert response.json()['demo']['remaining'] == remaining
+            wait(service.runner.get(sid))
+        assert first.post(f'/api/sessions/{sid}/messages', json={'text':'再说一次'}).status_code == 429
+
+        # A second browser cannot see the first browser's conversations.
+        with TestClient(app) as second:
+            assert second.get('/api/bootstrap').json()['sessions'] == []
+
+def test_demo_project_download_and_expiry_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'server-only-test-key')
+    app = create_app(tmp_path, OfflineRunner, mode='demo')
+    with TestClient(app) as client:
+        session = client.post('/api/sessions', json={'idea':'做一个星空游戏','name':'星空游戏'}).json()
+        sid = session['id']
+        service = next(iter(app.state.demo_manager.services.values()))
+        actual = service.session(sid)
+        workspace = Path(actual['workspace'])
+        (workspace/'index.html').write_text('<h1>星空游戏</h1>', encoding='utf-8')
+        service.store.publish_project(sid, 'index.html')
+        downloaded = client.get(f'/api/sessions/{sid}/project-download')
+        assert downloaded.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+            assert archive.read('index.html').decode() == '<h1>星空游戏</h1>'
+
+        visitor_dir = service.store.path.parent
+        with app.state.demo_manager._db() as db:
+            db.execute('UPDATE visitors SET expires=0')
+            db.commit()
+        app.state.demo_manager.cleanup()
+        assert not visitor_dir.exists()
+        assert client.get('/api/bootstrap').json()['sessions'] == []

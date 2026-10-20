@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
-from agentdesk.config import DEFAULT_CONFIG, PROVIDERS, create_model
+from agentdesk.config import DEFAULT_CONFIG, DEMO_CONFIG, PROVIDERS, create_model
 from agentdesk.creative import create_unique_project_path, creative_fingerprint, friendly_project_name, sanitize_project_name
 from agentdesk.runtime import Runner, content_text
 from agentdesk.project_runtime import launch_web_app, port_open
@@ -15,17 +15,18 @@ from agentdesk.storage import Store
 
 class DeskService:
     """Application service shared by REST and SSE; contains no UI dependencies."""
-    def __init__(self, data: Path, runner_factory=Runner):
+    def __init__(self, data: Path, runner_factory=Runner, demo: bool = False):
+        self.demo = demo
         data.mkdir(parents=True, exist_ok=True)
         self.workspace = data / "workspace"
         self.workspace.mkdir(exist_ok=True)
         self.chats_root = data / "chats"
         self.chats_root.mkdir(exist_ok=True)
         configured = os.environ.get("AGENTDESK_PROJECTS_DIR", "").strip()
-        if configured:
+        if configured and not demo:
             self.projects_root = Path(configured).expanduser()
-        elif data.name == ".agentdesk" and Path("D:/").is_dir():
-            self.projects_root = Path("D:/AI作品")
+        elif not demo and data.name == ".agentdesk" and Path("D:/").is_dir():
+            self.projects_root = Path("D:/AI作品-创想伙伴")
         else:
             self.projects_root = data / "projects"
         self.projects_root.mkdir(parents=True, exist_ok=True)
@@ -41,10 +42,10 @@ class DeskService:
         for archived in (False, True):
             for item in self.store.sessions(archived):
                 session = self.store.session(item["id"])
-                if session["config"] != DEFAULT_CONFIG:
-                    self.store.update_session(item["id"], config=dict(DEFAULT_CONFIG))
-        if self.store.setting("config") != DEFAULT_CONFIG:
-            self.store.set_setting("config", dict(DEFAULT_CONFIG))
+                if session["config"] != self.config():
+                    self.store.update_session(item["id"], config=self.config())
+        if self.store.setting("config") != self.config():
+            self.store.set_setting("config", self.config())
 
     def session(self, sid):
         try:
@@ -70,6 +71,13 @@ class DeskService:
         except KeyError:
             raise HTTPException(404, "会话不存在")
 
+    def public_session(self, value):
+        if not self.demo:
+            return value
+        result = dict(value)
+        result["workspace"] = "临时工作区"
+        return result
+
     def create_project(self, idea, placement="auto", workspace=None, title=None, name=None):
         idea = idea.strip()
         if not idea:
@@ -79,14 +87,14 @@ class DeskService:
         sid = self.store.new_session(path, self.config(), title or name)
         fingerprint = creative_fingerprint(sid, self.store.recent_project_signatures())
         self.store.add_project(sid, name, idea, fingerprint)
-        return self.session(sid)
+        return self.public_session(self.session(sid))
 
     def create_chat(self, title=None):
         sid = uuid.uuid4().hex
         path = self.chats_root / sid
         path.mkdir(parents=True)
         self.store.new_session(path, self.config(), title or "新的对话", sid=sid)
-        return self.session(sid)
+        return self.public_session(self.session(sid))
 
     def attach_project(self, sid, idea, placement="auto", workspace=None, name=None):
         session = self.idle(sid)
@@ -103,18 +111,20 @@ class DeskService:
             shutil.copytree(uploads, path / "uploads", dirs_exist_ok=True)
         fingerprint = creative_fingerprint(sid, self.store.recent_project_signatures())
         self.store.attach_project(sid, path, name, idea, fingerprint, old_workspace)
-        return self.session(sid)
+        return self.public_session(self.session(sid))
 
     def dismiss_project_proposal(self, sid):
         session = self.idle(sid)
         if session.get("project"):
             raise HTTPException(409, "作品已经开始制作了")
         self.store.update_session(sid, project_proposal=None, project_proposal_name=None)
-        return self.session(sid)
+        return self.public_session(self.session(sid))
 
     def suggest_project_name(self, idea, client):
         idea = idea.strip()
         fallback = friendly_project_name(idea)
+        if self.demo:
+            return fallback
         if not idea:
             return fallback
         config = self.config()
@@ -136,6 +146,8 @@ class DeskService:
             return fallback
 
     def _project_path(self, name, placement, workspace):
+        if self.demo and placement == "manual":
+            raise HTTPException(403, "体验版会自动准备临时工作区")
         if placement == "manual":
             parent = Path(workspace or "").expanduser()
             if not parent.is_absolute() or not parent.is_dir():
@@ -159,6 +171,8 @@ class DeskService:
     def api_key(self, client, provider):
         if provider not in PROVIDERS:
             raise HTTPException(400, "未知供应商")
+        if self.demo:
+            return os.environ.get(PROVIDERS[provider][3], "")
         with self.lock:
             memory = self.keys.get(client, {}).get(provider, "")
         if memory:
@@ -172,6 +186,8 @@ class DeskService:
         return os.environ.get(PROVIDERS[provider][3], "")
 
     def set_api_key(self, client, provider, api_key, persistent=True):
+        if self.demo:
+            raise HTTPException(403, "体验版已经准备好模型，无需填写密钥")
         value = api_key.strip()
         with self.lock:
             if value:
@@ -194,6 +210,8 @@ class DeskService:
         return key
 
     def default_workspace(self):
+        if self.demo:
+            return "临时工作区"
         value = self.store.setting("workspace", str(self.workspace))
         return value if Path(value).is_dir() else str(self.workspace)
 
@@ -202,7 +220,7 @@ class DeskService:
         for item in self.store.sessions(archived):
             s = self.session(item["id"])
             s["running"] = self.runner.active(s["id"])
-            result.append(s)
+            result.append(self.public_session(s))
         return result
 
     def snapshot(self, sid):
@@ -213,7 +231,8 @@ class DeskService:
             "mode": "project" if session.get("project") else "chat",
         }
         state.pop("events", None)
-        return {"session": session, "run": state, "messages": self.store.messages(sid), "events": self.store.events(sid)}
+        return {"session": self.public_session(session), "run": state, "messages": self.store.messages(sid), "events": self.store.events(sid)}
 
     def config(self):
-        return dict(DEFAULT_CONFIG)
+        source = DEMO_CONFIG if self.demo else DEFAULT_CONFIG
+        return {**source, "tools": list(source["tools"])}

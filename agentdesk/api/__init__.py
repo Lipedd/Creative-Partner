@@ -1,4 +1,6 @@
 import secrets
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
@@ -9,11 +11,28 @@ from agentdesk.config import DATA, ROOT
 from agentdesk.runtime import Runner
 from .routes import router
 from .service import DeskService
+from agentdesk.demo import DemoVisitorManager
 
-def create_app(data: Path | None = None, runner_factory=Runner):
-    app = FastAPI(title="Agent Desk API", version="2.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
-    app.state.desk = DeskService(data or DATA, runner_factory)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
+def create_app(data: Path | None = None, runner_factory=Runner, mode: str | None = None):
+    mode = (mode or os.environ.get("AGENTDESK_MODE", "local")).strip().lower()
+    demo = mode == "demo"
+    root = data or DATA
+    manager = DemoVisitorManager(root, runner_factory) if demo else None
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            if manager:
+                manager.close()
+
+    app = FastAPI(title="Agent Desk API", version="2.0.0", docs_url="/api/docs",
+                  openapi_url="/api/openapi.json", lifespan=lifespan)
+    app.state.demo_manager = manager
+    app.state.desk = None if demo else DeskService(root, runner_factory)
+    allowed_hosts = ["*"] if demo else ["127.0.0.1", "localhost", "[::1]", "testserver"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     @app.middleware("http")
     async def local_client(request: Request, call_next):
@@ -24,10 +43,19 @@ def create_app(data: Path | None = None, runner_factory=Runner):
         client = request.cookies.get("agentdesk_client")
         fresh = not client or len(client) != 43
         request.state.client = secrets.token_urlsafe(32) if fresh else client
+        if demo:
+            context = app.state.demo_manager.context(request.state.client, request.client.host if request.client else "unknown")
+            request.state.desk = context.service
+            request.state.demo_context = context
+        else:
+            request.state.desk = app.state.desk
+            request.state.demo_context = None
         response = await call_next(request)
         if fresh:
-            response.set_cookie("agentdesk_client", request.state.client, httponly=True, samesite="strict")
+            response.set_cookie("agentdesk_client", request.state.client, httponly=True, samesite="strict",
+                                max_age=app.state.demo_manager.lifetime if demo else None)
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "same-origin"
         return response
 
     @app.exception_handler(ValueError)

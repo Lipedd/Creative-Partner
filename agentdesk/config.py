@@ -31,6 +31,18 @@ DEFAULT_CONFIG = {
     "max_steps": 40,
 }
 
+DEMO_CONFIG = {
+    **DEFAULT_CONFIG,
+    # The public demo only creates static browser projects. It never exposes a
+    # shell or starts model-generated services on the host machine.
+    "tools": ["files", "calculator", "memory", "plan", "web"],
+    "max_steps": 28,
+    "system_prompt": DEFAULT_CONFIG["system_prompt"] + (
+        " 你正在公开体验版中，只能制作由 HTML、CSS、JavaScript 和浏览器可直接使用的资源组成的作品。"
+        "不要要求安装软件，不要尝试运行命令或启动额外服务。"
+    ),
+}
+
 def create_model(config: dict, api_key: str):
     kind = PROVIDERS[config["provider"]][0]
     common = dict(model=config["model"])

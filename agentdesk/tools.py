@@ -37,6 +37,7 @@ def calculate(expression: str):
 
 def build_tools(workspace, store, sid, enabled, cancel):
     root = Path(workspace).resolve()
+    workspace_limit = max(5, int(os.environ.get("AGENTDESK_WORKSPACE_LIMIT_MB", "1024"))) * 1024 * 1024
     def check():
         if cancel.is_set():
             raise RuntimeError("用户已停止运行。")
@@ -88,8 +89,13 @@ def build_tools(workspace, store, sid, enabled, cancel):
         """Create or replace a UTF-8 file inside the current project folder."""
         check()
         p = resolve_inside(root, path, write=True)
-        if len(content.encode()) > 1_000_000:
+        encoded_size = len(content.encode())
+        if encoded_size > 1_000_000:
             raise ValueError("单次写入上限为 1 MB。")
+        previous_size = p.stat().st_size if p.exists() and p.is_file() else 0
+        current_size = sum(item.stat().st_size for item in root.rglob("*") if item.is_file() and not item.is_symlink())
+        if current_size - previous_size + encoded_size > workspace_limit:
+            raise ValueError("这个作品的内容太多了，请删掉一些不需要的内容再继续。")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return f"已写入 {path}（{len(content)} 字符）"
@@ -191,7 +197,10 @@ def build_tools(workspace, store, sid, enabled, cancel):
             result = raw.decode("gb18030", errors="replace")
         return f"退出码：{proc.returncode}；已停止：{stopped}\n{result}"
 
-    groups = {"files": [list_files, read_file, search_files, write_file, publish_project, publish_web_app],
+    file_tools = [list_files, read_file, search_files, write_file, publish_project]
+    if "terminal" in enabled:
+        file_tools.append(publish_web_app)
+    groups = {"files": file_tools,
               "calculator": [calculator], "memory": [recall_memory, save_memory],
               "plan": [update_plan], "project_request": [propose_project],
               "web": [web_search], "terminal": [run_terminal]}
