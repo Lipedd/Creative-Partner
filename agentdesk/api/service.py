@@ -79,6 +79,7 @@ class DeskService:
         return result
 
     def create_project(self, idea, placement="auto", workspace=None, title=None, name=None):
+        self._ensure_session_capacity()
         idea = idea.strip()
         if not idea:
             raise HTTPException(400, "先告诉我你想做什么吧")
@@ -90,6 +91,7 @@ class DeskService:
         return self.public_session(self.session(sid))
 
     def create_chat(self, title=None):
+        self._ensure_session_capacity()
         sid = uuid.uuid4().hex
         path = self.chats_root / sid
         path.mkdir(parents=True)
@@ -162,6 +164,10 @@ class DeskService:
         except OSError:
             raise HTTPException(400, "默认位置不能保存作品，请选择其他位置")
 
+    def _ensure_session_capacity(self):
+        if self.demo and len(self.store.sessions(False)) + len(self.store.sessions(True)) >= 6:
+            raise HTTPException(429, "体验版最多保留 6 个对话，请先使用已有对话")
+
     def idle(self, sid):
         session = self.session(sid)
         if self.runner.active(sid) or session["pending"]:
@@ -206,7 +212,8 @@ class DeskService:
     def require_key(self, client, provider):
         key = self.api_key(client, provider)
         if not key and PROVIDERS[provider][0] != "ollama":
-            raise HTTPException(400, "请在模型设置中填写 API Key")
+            message = "体验服务暂时没有准备好，请稍后再来" if self.demo else "请在模型设置中填写 API Key"
+            raise HTTPException(503 if self.demo else 400, message)
         return key
 
     def default_workspace(self):

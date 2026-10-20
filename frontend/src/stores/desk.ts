@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, body, sessionUrl } from '../api/client'
-import type { Attachment, Bootstrap, ModelConfig, Provider, Session, Snapshot } from '../types'
+import type { Attachment, Bootstrap, DemoStatus, ModelConfig, Provider, Session, Snapshot } from '../types'
 
 export const useDesk = defineStore('desk', () => {
   const sessions = ref<Session[]>([])
@@ -22,12 +22,17 @@ export const useDesk = defineStore('desk', () => {
   const refreshFiles = ref(0)
   const projectDraft = ref('')
   const projectNameDraft = ref('')
+  const demo = ref<DemoStatus>({ enabled: false, limit: 0, remaining: 0, expires_at: 0 })
+  const demoNow = ref(Date.now() / 1000)
   let source: EventSource | null = null
+  let clock: number | null = null
   let selection = 0
   const session = computed(() => state.value?.session)
   const running = computed(() => state.value?.run.status === 'running')
   const locked = computed(() => running.value || !!session.value?.pending)
   const ready = computed(() => !!credentials.value[session.value?.config.provider ?? ''])
+  const demoSeconds = computed(() => demo.value.enabled ? Math.max(0, Math.ceil(demo.value.expires_at - demoNow.value)) : 0)
+  const canSend = computed(() => !demo.value.enabled || (demo.value.remaining > 0 && demoSeconds.value > 0))
 
   async function guard<T>(fn: () => Promise<T>): Promise<T | undefined> {
     error.value = ''
@@ -39,6 +44,8 @@ export const useDesk = defineStore('desk', () => {
       const result = await api<Bootstrap>('/bootstrap')
       sessions.value = result.sessions; providers.value = result.providers; defaultConfig.value = result.config
       credentials.value = result.credentials; workspace.value = result.workspace; defaultWorkspace.value = result.workspace
+      demo.value = result.demo
+      if (demo.value.enabled && clock === null) clock = window.setInterval(() => { demoNow.value = Date.now() / 1000 }, 1000)
     } finally { loading.value = false }
   }
   async function refreshSessions() { sessions.value = await api<Session[]>(`/sessions?archived=${archived.value}`) }
@@ -100,7 +107,8 @@ export const useDesk = defineStore('desk', () => {
     const id = session.value.id
     sending.value = true
     try {
-      await api(sessionUrl(id, 'messages'), { method: 'POST', body: body({ text, attachments: attachments.map(a => a.path) }) })
+      const result = await api<{status:string;demo:DemoStatus}>(sessionUrl(id, 'messages'), { method: 'POST', body: body({ text, attachments: attachments.map(a => a.path) }) })
+      if (result.demo.enabled) demo.value = result.demo
       const snapshot = await api<Snapshot>(`/sessions/${id}`)
       if (session.value?.id === id) applySnapshot(snapshot)
       return true
@@ -116,9 +124,9 @@ export const useDesk = defineStore('desk', () => {
   async function setKey(provider: string, apiKey: string, persistent = true) {
     credentials.value = await api<Record<string, boolean>>('/credentials', { method: 'PUT', body: body({ provider, api_key: apiKey, persistent }) })
   }
-  function dispose() { selection++; source?.close(); source = null }
+  function dispose() { selection++; source?.close(); source = null; if(clock!==null){window.clearInterval(clock);clock=null} }
   return { sessions, providers, credentials, workspace, defaultWorkspace, state, loading, connected, sending, error, dialog,
-    sidebarOpen, inspectorOpen, archived, refreshFiles, projectDraft, projectNameDraft, defaultConfig, session, running, locked, ready,
+    sidebarOpen, inspectorOpen, archived, refreshFiles, projectDraft, projectNameDraft, defaultConfig, demo, demoSeconds, canSend, session, running, locked, ready,
     guard, initialize, refreshSessions, select, createProject, createChat, attachProject, dismissProjectProposal,
     send, saveConfig, setKey, dispose }
 })

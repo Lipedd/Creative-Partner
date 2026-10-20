@@ -19,7 +19,8 @@ export interface RunProgress { stage: string; detail: string; step: number; comp
 export interface RunState { status: 'idle' | 'running' | 'done' | 'approval' | 'error' | 'stopped'; mode: 'chat'|'project'; text: string; error: string; progress?: RunProgress }
 export interface RunEvent { id: number; kind: string; data: unknown; created: string }
 export interface Snapshot { session: Session; messages: Message[]; run: RunState; events: RunEvent[] }
-export interface Bootstrap { providers: Provider[]; config: ModelConfig; workspace: string; credentials: Record<string, boolean>; sessions: Session[] }
+export interface DemoStatus { enabled: boolean; limit: number; remaining: number; expires_at: number }
+export interface Bootstrap { providers: Provider[]; config: ModelConfig; workspace: string; credentials: Record<string, boolean>; sessions: Session[]; demo: DemoStatus }
 export interface FileEntry { name: string; path: string; directory: boolean; size: number }
 export interface Memory { id: string; content: string; created: string }
 export interface Directories { path: string; parent: string; roots: string[]; directories: { name: string; path: string }[] }

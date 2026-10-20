@@ -10,7 +10,7 @@ import type { Directories } from '../types'
 type Step = 'choice'|'idea'|'placement'|'directory'
 const desk=useDesk(), router=useRouter()
 const converting=Boolean(desk.projectDraft && desk.session && !desk.session.project)
-const step=ref<Step>(converting?'placement':'choice')
+const step=ref<Step>(converting?(desk.demo.enabled?'idea':'placement'):'choice')
 const idea=ref(desk.projectDraft), path=ref(desk.defaultWorkspace || desk.workspace)
 const projectName=ref(converting?desk.projectNameDraft:''), namedIdea=ref(projectName.value?idea.value.trim():'')
 const listing=ref<Directories>(), busy=ref(false), error=ref('')
@@ -33,7 +33,7 @@ async function suggestName(){
   catch(e){error.value=e instanceof Error?e.message:'暂时没有想好名字，再试一次吧';return false}
   finally{busy.value=false}
 }
-async function next(){if(await suggestName())step.value='placement'}
+async function next(){if(await suggestName()){if(desk.demo.enabled)await create('auto');else step.value='placement'}}
 async function browse(value=path.value){busy.value=true;error.value='';try{listing.value=await api<Directories>(`/directories?path=${encodeURIComponent(value)}`);path.value=listing.value.path}catch(e){error.value=e instanceof Error?e.message:'这里暂时打不开'}finally{busy.value=false}}
 async function createChat(){busy.value=true;error.value='';try{const id=await desk.createChat();close();await router.push(`/chat/${id}`)}catch(e){error.value=e instanceof Error?e.message:'对话没有打开，再试一次吧'}finally{busy.value=false}}
 async function create(placement:'auto'|'manual') {
@@ -48,7 +48,7 @@ async function create(placement:'auto'|'manual') {
   }catch(e){error.value=e instanceof Error?e.message:'作品没有准备好，再试一次吧'}finally{busy.value=false}
 }
 function manual(){step.value='directory';void browse()}
-onMounted(()=>{if(step.value==='idea') void focusIdea();if(converting&&!projectName.value)void suggestName()})
+onMounted(()=>{if(step.value==='idea') void focusIdea();if(converting&&desk.demo.enabled)void create('auto');else if(converting&&!projectName.value)void suggestName()})
 </script>
 
 <template><ModalShell :title="title" :subtitle="subtitle" @close="close">
